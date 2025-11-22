@@ -1,54 +1,77 @@
-from langchain.agents import AgentType, initialize_agent
-from langchain_community.agent_toolkits.jira.toolkit import JiraToolkit
-from langchain_community.utilities.jira import JiraAPIWrapper
-from langchain_openai import OpenAI
-from langchain.tools import tool
-from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 import json 
 import concurrent.futures
 import os 
+import re
+from huggingface_hub import InferenceClient
 
 # local imports
 from api.utils import jira_utils
 
+# Load system prompts
 with open("./api/utils/system_prompts.json") as f:
     system_prompts = json.load(f)
 with open("./api/utils/example_prompts.json") as f:
     example_prompts = json.load(f)
 
-llm = OpenAI(temperature=0)
+# Initialize Hugging Face client
+def get_hf_client():
+    hf_token = os.getenv('HF_TOKEN')
+    if not hf_token:
+        raise ValueError("HF_TOKEN environment variable is required")
+    return InferenceClient(token=hf_token)
+
+def chat_completion(messages, model="meta-llama/Llama-3.2-3B-Instruct", temperature=0.7, max_tokens=2000):
+    """Call Hugging Face Inference API for chat completion"""
+    client = get_hf_client()
+    
+    try:
+        # Use the chat completions API (OpenAI-compatible)
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Error calling Hugging Face API: {e}")
+        raise
 
 class LLMTask:
-    def __init__(self, system_prompt, examples, llm):
+    def __init__(self, system_prompt, examples):
         self.system_prompt = system_prompt
         self.examples = examples
-        self.llm = llm
 
-    def construct_prompt(self):
-        example_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("human", "{input}"),
-                ("ai", "{output}"),
-            ]
-        )       
-        few_shot_prompt = FewShotChatMessagePromptTemplate(
-            example_prompt=example_prompt,
-            examples=self.examples,
-        )       
-        return ChatPromptTemplate.from_messages(
-            [
-                ("system", self.system_prompt),
-                few_shot_prompt,
-                ("human", "{input}"),
-            ]
-        )
+    def construct_messages(self, input_text):
+        """Construct messages array for chat completion"""
+        messages = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+        
+        # Add few-shot examples
+        for example in self.examples:
+            messages.append({"role": "user", "content": example["input"]})
+            messages.append({"role": "assistant", "content": example["output"]})
+        
+        # Add current input
+        messages.append({"role": "user", "content": input_text})
+        
+        return messages
   
-    def run_llm(self, input):
-        chain = self.construct_prompt() | self.llm 
-        return chain.invoke({"input": input})
+    def run_llm(self, input_text):
+        """Run LLM with few-shot prompting"""
+        messages = self.construct_messages(input_text)
+        return chat_completion(messages, temperature=0)
 
-product_model = LLMTask(system_prompts.get("system_prompt_product"), example_prompts.get("examples_product"), llm)
-linking_model = LLMTask(system_prompts.get("system_prompt_linking"), example_prompts.get("examples_linking"), llm)
+product_model = LLMTask(
+    system_prompts.get("system_prompt_product"), 
+    example_prompts.get("examples_product")
+)
+linking_model = LLMTask(
+    system_prompts.get("system_prompt_linking"), 
+    example_prompts.get("examples_linking")
+)
 
 def check_issue_and_link_helper(args):
     key, data, primary_issue_key, primary_issue_data = args
@@ -77,9 +100,8 @@ def user_stories_acceptance_criteria_priority(primary_issue_key, primary_issue_d
         comment = f"user_stories: {user_stories}\nacceptance_criteria: {acceptance_criteria}\npriority: {priority}\nthought: {thought}"
         jira_utils.add_jira_comment(primary_issue_key, comment) 
 
-@tool
-def triage(ticket_number:str) -> str:
-    """triage a given ticket and link related tickets"""
+def triage(ticket_number: str) -> str:
+    """Triage a given ticket and link related tickets"""
     ticket_number = str(ticket_number)
     all_tickets = jira_utils.get_all_tickets()
     primary_issue_key, primary_issue_data = jira_utils.get_ticket_data(ticket_number)
@@ -87,16 +109,97 @@ def triage(ticket_number:str) -> str:
     user_stories_acceptance_criteria_priority(primary_issue_key, primary_issue_data)
     return "Task complete"
 
-jira = JiraAPIWrapper()
-toolkit = JiraToolkit.from_jira_api_wrapper(jira)
-agent = initialize_agent(
-    toolkit.get_tools() + [triage], 
-    llm, 
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, 
-    verbose=True, 
-    max_iterations=5,
-    return_intermediate_steps=True
-)
+def search_tickets(query: str) -> str:
+    """Search for Jira tickets based on natural language query"""
+    try:
+        # Simple keyword-based JQL generation
+        jql = ""
+        
+        if "open" in query.lower() or "opened" in query.lower():
+            jql = "status != Done AND status != Closed"
+        
+        if "bug" in query.lower():
+            if jql:
+                jql += " AND type = Bug"
+            else:
+                jql = "type = Bug"
+        
+        if "high priority" in query.lower():
+            if jql:
+                jql += " AND priority = High"
+            else:
+                jql = "priority = High"
+        
+        # If no JQL generated, get all tickets
+        if not jql:
+            jql = "ORDER BY created DESC"
+        
+        print(f"Generated JQL: {jql}")
+        
+        # Execute JQL query
+        tickets = jira_utils.search_jira_issues(jql)
+        
+        if not tickets:
+            return "No tickets found matching your query."
+        
+        # Format results
+        result = f"Found {len(tickets)} ticket(s):\n\n"
+        for issue in tickets[:10]:  # Limit to 10 results
+            result += f"- {issue.key}: {issue.fields.summary} (Status: {issue.fields.status.name})\n"
+        
+        if len(tickets) > 10:
+            result += f"\n... and {len(tickets) - 10} more tickets."
+        
+        return result
+    except Exception as e:
+        return f"Error searching tickets: {str(e)}"
+
+# Simplified agent implementation
+class SimpleAgent:
+    def __init__(self, tools, max_iterations=3):
+        self.tools = tools
+        self.max_iterations = max_iterations
+    
+    def invoke(self, input_dict):
+        """Execute agent - simplified to handle general queries"""
+        user_input = input_dict.get("input", "")
+        
+        # Check if input is a triage command
+        if "triage" in user_input.lower():
+            # Extract ticket number
+            ticket_match = re.search(r'[A-Z]+-\d+', user_input)
+            if ticket_match:
+                ticket_number = ticket_match.group(0)
+                result = self.tools["triage"](ticket_number)
+                return {"output": f"Successfully triaged ticket {ticket_number}. {result}"}
+            else:
+                return {"output": "Please provide a valid ticket number (e.g., PROJ-123)"}
+        
+        # Check if input is a search/list command
+        search_keywords = ["list", "show", "find", "search", "get", "all"]
+        if any(keyword in user_input.lower() for keyword in search_keywords):
+            result = self.tools["search_tickets"](user_input)
+            return {"output": result}
+        
+        # For general queries, use direct chat completion
+        messages = [
+            {"role": "system", "content": "You are a helpful Jira assistant. Help users with their Jira-related questions and tasks."},
+            {"role": "user", "content": user_input}
+        ]
+        
+        try:
+            response = chat_completion(messages, max_tokens=500)
+            return {"output": response}
+        except Exception as e:
+            return {"output": f"I encountered an error: {str(e)}. Please try rephrasing your question."}
+
+# Initialize agent with available tools
+jira_tools = {
+    "triage": triage,
+    "search_tickets": search_tickets,
+}
+
+agent = SimpleAgent(tools=jira_tools, max_iterations=3)
 
 if __name__ == '__main__':
-    pass 
+    pass
