@@ -1,20 +1,21 @@
-FROM python:3.8   
+FROM python:3.11-slim
 
-ENV DockerHOME=/home/app/webapp  
+# Install system dependencies including CA certificates
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
-RUN mkdir -p $DockerHOME  
+WORKDIR /home/app/webapp
 
-WORKDIR $DockerHOME  
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1  
+COPY . .
 
-RUN pip install --upgrade pip  
+RUN chmod +x docker-entrypoint.sh
 
-COPY . $DockerHOME  
-
-RUN pip install -r requirements.txt  
-
-EXPOSE 8000  
-
-CMD ./docker-entrypoint.sh
+ENTRYPOINT ["./docker-entrypoint.sh"]
