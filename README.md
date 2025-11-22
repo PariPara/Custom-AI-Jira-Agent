@@ -75,10 +75,20 @@ Requires the following
 * Jira Username 
 * Jira Instance URL 
 
+## Configuration
+
+1. Copy your credentials to `config/config.ini`:
+   - `JIRA_URL`: Your Jira instance URL
+   - `JIRA_EMAIL`: Your Jira email
+   - `JIRA_API_TOKEN`: Your Jira API token
+   - `HF_TOKEN`: Your Hugging Face API token (get it from https://huggingface.co/settings/tokens)
+
+2. The default model is `meta-llama/Llama-3.2-3B-Instruct`. You can change it in `django/api/utils/model_utils.py`
+
 ## References 
 * https://google.github.io/mesop/getting-started/quickstart/#starter-kit
 * https://www.django-rest-framework.org/#example
 * https://blog.logrocket.com/dockerizing-django-app/
 
 ## TODO 
-* Add coding agent tool 
+* Add coding agent tool
