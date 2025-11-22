@@ -1,24 +1,40 @@
 import os
 import mesop as me
+from decouple import Config, RepositoryEnv
 
-PROJECT_KEY = os.environ.get("PROJECT_KEY")
-DOCKER_RUNNING = os.environ.get("DOCKER_RUNNING", False)
+def get_config():
+    """Load configuration from environment or config file"""
+    # Try to load from mounted config file first
+    config_path = '/srv/mesop-app/config/config.ini'
+    
+    if os.path.exists(config_path):
+        return Config(RepositoryEnv(config_path))
+    
+    # Fallback to environment variables
+    return Config()
 
+config = get_config()
+
+# Jira settings
+JIRA_URL = os.getenv('JIRA_URL', '')
+JIRA_EMAIL = os.getenv('JIRA_EMAIL', '')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN', '')
+
+# Hugging Face settings
+HF_TOKEN = os.getenv('HF_TOKEN', '')
+
+# Example prompts for the UI
 EXAMPLE_PROMPTS = [
-    f"How many tasks are in status 'DONE' in project {PROJECT_KEY}?",
-    f"Create a new task in project {PROJECT_KEY} with description 'This is a test'.",
-    f"What are the tasks that are in status 'IN PROGRESS' in project {PROJECT_KEY}?",
-    f"Triage the issue {PROJECT_KEY}-19",
-    f"Transition the tasks that are in status 'IN PROGRESS' in project {PROJECT_KEY} to 'DONE'"
+    "Triage ticket PROJ-123",
+    "Show me all high priority bugs",
+    "List open tickets assigned to me",
+    "Find tickets related to authentication",
+    "What are the blockers for this sprint?",
 ]
 
-DJANGO_URL = "http://django:8000/" if DOCKER_RUNNING else "http://localhost:8000/"
-
+# Mesop State class for UI
 @me.stateclass
 class State:
-    input: str
-    output: str
-    in_progress: bool
-
-if __name__ == "__main__":
-    pass
+    input: str = ""
+    output: str = ""
+    in_progress: bool = False
