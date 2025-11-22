@@ -1,122 +1,228 @@
+from jira import JIRA
 import requests
-import os 
-import re 
-import json 
-from typing import Union
+import os
+from decouple import config
 
-JIRA_INSTANCE_URL = os.environ.get("JIRA_INSTANCE_URL")
-PROJECT_KEY = os.environ.get("PROJECT_KEY")
-JIRA_USERNAME = os.environ.get("JIRA_USERNAME")
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
+# Initialize Jira client
+def get_jira_client():
+    """Get authenticated Jira client using API v3"""
+    jira_url = os.getenv('JIRA_URL') or config('JIRA_URL')
+    jira_email = os.getenv('JIRA_EMAIL') or config('JIRA_EMAIL')
+    jira_api_token = os.getenv('JIRA_API_TOKEN') or config('JIRA_API_TOKEN')
+    
+    return JIRA(
+        server=jira_url,
+        basic_auth=(jira_email, jira_api_token)
+    )
 
-def link_jira_issue(inward_issue_key: str, outward_issue_key: str, link_type: str='Relates') -> None:
-    """Links two Jira tickets.
+def get_jira_auth():
+    """Get Jira authentication credentials"""
+    jira_email = os.getenv('JIRA_EMAIL') or config('JIRA_EMAIL')
+    jira_api_token = os.getenv('JIRA_API_TOKEN') or config('JIRA_API_TOKEN')
+    return (jira_email, jira_api_token)
 
-    Args:
-        primary_issue_key: Jira key of the inward issue.
-        outward_issue_key: Jira key of the outward issue.
-        link_type: Jira link type.
-    Returns:
+def get_jira_url():
+    """Get Jira base URL"""
+    url = os.getenv('JIRA_URL') or config('JIRA_URL')
+    # Remove trailing slashes
+    return url.rstrip('/')
+
+def search_jira_issues(jql, max_results=50):
     """
-    try:
-        data = json.dumps({
-            "inwardIssue": {
-              "key": inward_issue_key
-            },
-            "outwardIssue": {
-              "key": outward_issue_key
-            },
-            "type": {
-              "name": link_type
-            }
-        }) 
-        headers = {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
-        }
-        if (result := requests.post(f'{JIRA_INSTANCE_URL}/rest/api/2/issueLink', data=data, headers=headers, auth=(JIRA_USERNAME, JIRA_API_TOKEN))) and \
-        (result.status_code == 201):
-            print(f'Linked successfully {inward_issue_key}->{outward_issue_key}')
-    except Exception as e:
-        print(f'ERROR link_jira_issue: {e}')
-
-def extract_tag_helper(text: str, tag: str='related') -> Union[str, None]:
-    """Extract the text between two tags.
-
+    Search for Jira issues using JQL with the new API endpoint
+    
     Args:
-        text: Text to search.
-        tag: Tag name to be. 
-    Returns:
-        The text between two tags. 
-    """
-    try:
-        if regex := re.compile(f'<{tag}>(.*?)<{tag}>', flags=re.DOTALL).search(text):
-            return regex.group(1)
-    except Exception as e:
-        print(f'ERROR extract_tag_helper: {e}')
-
-def parse_jira_issue_fields(data: dict) -> tuple:
-    """Extract the key, summary and description fields from Jira.
-
-    Args:
-        data: Jira response JSON object.
-    Returns:
-        The Jira key, also concatenates the summary and description fields.
-    """
-    key = data.get('key')
-    summary_description = f"{data.get('fields',{}).get('summary')} {data.get('fields',{}).get('description')}" 
-    return (key, summary_description)
-
-def get_all_tickets() -> Union[dict, None]:
-    """Get all unresolved Jira tickets for a Jira project (maximum 1000). 
-
-    Args:
+        jql: JQL query string
+        max_results: Maximum number of results to return
         
     Returns:
-        A dictionary of Jira key, description and summary data.
+        List of Jira issues
     """
     try:
-        if (result := requests.get(f'{JIRA_INSTANCE_URL}/rest/api/2/search?jql=project={PROJECT_KEY}+AND+resolution=unresolved&maxResults=1000', auth=(JIRA_USERNAME, JIRA_API_TOKEN))) \
-        and (issues := result.json().get('issues')):
-            return {parse_jira_issue_fields(issue)[0]: parse_jira_issue_fields(issue)[1] for issue in issues}
-    except Exception as e:
-        print(f'ERROR get_all_tickets: {e}')
-
-def get_ticket_data(key: str) -> Union[dict, None]:
-    """Get Jira issue data. 
-
-    Args:
-        key: Jira issue key to be looked up.
-    Returns:
-        Jira ticket data.
-    """
-    try:
-        if (result := requests.get(f'{JIRA_INSTANCE_URL}/rest/agile/1.0/issue/{key}', auth=(JIRA_USERNAME, JIRA_API_TOKEN))):
-            return parse_jira_issue_fields(result.json())
-    except Exception as e:
-        print(f'ERROR get_ticket_data: {e}')
-
-def add_jira_comment(key: str, comment: str)-> None:
-    """Add comment to Jira issue. 
-
-    Args:
-        key: Jira issue key to be commented on.
-        comment: Comment to be applied to the ticket. 
-    Returns:
-    """
-    try:
-        data = json.dumps({
-            "body": comment
-        }) 
+        # Use the new /rest/api/3/search/jql endpoint
+        base_url = get_jira_url()
+        auth = get_jira_auth()
+        
+        url = f"{base_url}/rest/api/3/search/jql"
+        
         headers = {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
+            "Accept": "application/json",
+            "Content-Type": "application/json"
         }
-        if (result := requests.post(f'{JIRA_INSTANCE_URL}/rest/api/2/issue/{key}/comment', data=data, headers=headers, auth=(JIRA_USERNAME, JIRA_API_TOKEN))) and \
-        (result.status_code == 201):
-            print('Comment successful')
+        
+        payload = {
+            "jql": jql,
+            "maxResults": max_results,
+            "fields": ["summary", "status", "priority", "assignee", "reporter", "issuetype", "description"]
+        }
+        
+        # Disable SSL verification for now (not recommended for production)
+        # Better solution: install proper certificates in Docker
+        response = requests.post(
+            url, 
+            json=payload, 
+            auth=auth, 
+            headers=headers,
+            verify=True,  # Keep verification on
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Convert to JIRA issue-like objects for compatibility
+        class JiraIssue:
+            def __init__(self, issue_data):
+                self.key = issue_data['key']
+                self.fields = type('obj', (object,), {
+                    'summary': issue_data['fields'].get('summary', ''),
+                    'status': type('obj', (object,), {'name': issue_data['fields'].get('status', {}).get('name', 'Unknown')}),
+                    'priority': type('obj', (object,), {'name': issue_data['fields'].get('priority', {}).get('name', 'None')}) if issue_data['fields'].get('priority') else None,
+                    'issuetype': type('obj', (object,), {'name': issue_data['fields'].get('issuetype', {}).get('name', 'Unknown')}),
+                })
+        
+        issues = [JiraIssue(issue) for issue in data.get('issues', [])]
+        return issues
+        
+    except requests.exceptions.SSLError as e:
+        print(f"SSL Error: {e}")
+        print("Retrying with SSL verification disabled...")
+        try:
+            # Retry with SSL verification disabled
+            response = requests.post(
+                url, 
+                json=payload, 
+                auth=auth, 
+                headers=headers,
+                verify=False,  # Disable SSL verification
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            class JiraIssue:
+                def __init__(self, issue_data):
+                    self.key = issue_data['key']
+                    self.fields = type('obj', (object,), {
+                        'summary': issue_data['fields'].get('summary', ''),
+                        'status': type('obj', (object,), {'name': issue_data['fields'].get('status', {}).get('name', 'Unknown')}),
+                        'priority': type('obj', (object,), {'name': issue_data['fields'].get('priority', {}).get('name', 'None')}) if issue_data['fields'].get('priority') else None,
+                        'issuetype': type('obj', (object,), {'name': issue_data['fields'].get('issuetype', {}).get('name', 'Unknown')}),
+                    })
+            
+            issues = [JiraIssue(issue) for issue in data.get('issues', [])]
+            return issues
+        except Exception as retry_error:
+            print(f"Retry also failed: {retry_error}")
+            return []
     except Exception as e:
-        print(f'ERROR add_jira_comment: {e}')
+        print(f"Error searching Jira issues: {e}")
+        return []
 
-if __name__ == '__main__':
-    pass 
+def get_all_tickets():
+    """Get all tickets from Jira"""
+    try:
+        # Use JQL to get recent tickets
+        issues = search_jira_issues('ORDER BY created DESC', max_results=1000)
+        
+        tickets = {}
+        for issue in issues:
+            tickets[issue.key] = {
+                'summary': issue.fields.summary,
+                'description': '',  # Description not included in search
+                'status': issue.fields.status.name,
+                'priority': issue.fields.priority.name if issue.fields.priority else 'None',
+            }
+        return tickets
+    except Exception as e:
+        print(f"Error getting all tickets: {e}")
+        return {}
+
+def get_ticket_data(ticket_number):
+    """
+    Get data for a specific ticket
+    
+    Args:
+        ticket_number: Jira ticket key (e.g., 'PROJ-123')
+        
+    Returns:
+        Tuple of (issue_key, issue_data_string)
+    """
+    try:
+        jira = get_jira_client()
+        issue = jira.issue(ticket_number)
+        
+        issue_data = f"""
+        Summary: {issue.fields.summary}
+        Description: {issue.fields.description or 'No description'}
+        Status: {issue.fields.status.name}
+        Priority: {issue.fields.priority.name if issue.fields.priority else 'None'}
+        Assignee: {issue.fields.assignee.displayName if issue.fields.assignee else 'Unassigned'}
+        Reporter: {issue.fields.reporter.displayName if issue.fields.reporter else 'Unknown'}
+        """
+        
+        return issue.key, issue_data
+    except Exception as e:
+        print(f"Error getting ticket data: {e}")
+        return ticket_number, f"Error: {str(e)}"
+
+def link_jira_issue(primary_issue_key, related_issue_key):
+    """
+    Link two Jira issues together
+    
+    Args:
+        primary_issue_key: Key of the primary issue
+        related_issue_key: Key of the related issue
+    """
+    try:
+        jira = get_jira_client()
+        jira.create_issue_link(
+            type="Relates",
+            inwardIssue=primary_issue_key,
+            outwardIssue=related_issue_key
+        )
+        print(f"Linked {primary_issue_key} to {related_issue_key}")
+    except Exception as e:
+        print(f"Error linking issues: {e}")
+
+def add_jira_comment(issue_key, comment_text):
+    """
+    Add a comment to a Jira issue
+    
+    Args:
+        issue_key: Jira ticket key
+        comment_text: Comment text to add
+    """
+    try:
+        jira = get_jira_client()
+        jira.add_comment(issue_key, comment_text)
+        print(f"Added comment to {issue_key}")
+    except Exception as e:
+        print(f"Error adding comment: {e}")
+
+def extract_tag_helper(text, tag=None):
+    """
+    Extract content from XML-like tags
+    
+    Args:
+        text: Text containing tags
+        tag: Tag name to extract (optional)
+        
+    Returns:
+        Extracted content or None
+    """
+    import re
+    
+    if not tag:
+        # Try to extract any content between tags
+        match = re.search(r'<([^>]+)>(.*?)</\1>', text, re.DOTALL)
+        if match:
+            return match.group(2).strip()
+        return None
+    
+    pattern = f'<{tag}>(.*?)</{tag}>'
+    match = re.search(pattern, text, re.DOTALL)
+    
+    if match:
+        return match.group(1).strip()
+    return None
